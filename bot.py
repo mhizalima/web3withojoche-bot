@@ -163,7 +163,10 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Hi! I track community activity and keep a leaderboard.\n\n"
+        "👑 Welcome to Web3withOjoche's community bot! 🚀\n\n"
+        "I track member activity — messages, task participation, and "
+        "engagement — and keep a live leaderboard. Stay active and "
+        "complete tasks to climb the ranks and win rewards every season.\n\n"
         "Commands:\n"
         "/leaderboard - Top active members\n"
         "/myscore - Your points and rank\n"
