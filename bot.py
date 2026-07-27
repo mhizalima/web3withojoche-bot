@@ -10,6 +10,7 @@ Setup instructions are in README.md.
 """
 
 import os
+import re
 import sqlite3
 import logging
 import datetime
@@ -82,9 +83,17 @@ def init_db():
                 description TEXT,
                 points_value INTEGER,
                 active INTEGER DEFAULT 1,
-                created_at TEXT
+                created_at TEXT,
+                announcement_chat_id INTEGER,
+                announcement_message_id INTEGER
             )
         """)
+        # Migration for databases created before these columns existed.
+        for col in ("announcement_chat_id", "announcement_message_id"):
+            try:
+                c.execute(f"ALTER TABLE tasks ADD COLUMN {col} INTEGER")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         c.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 submission_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,9 +241,14 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active tasks right now.")
         return
 
-    lines = ["📋 *Active tasks* — reply to this list with a screenshot to submit proof:\n"]
+    lines = ["📋 *Active tasks*\n"]
     for row in rows:
         lines.append(f"#{row['task_id']} ({row['points_value']} pts): {row['description']}")
+    lines.append(
+        "\nTo submit proof: reply directly to that task's original announcement "
+        "message with your screenshot, or caption your screenshot with its "
+        "number (e.g. \"#3\")."
+    )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -272,8 +286,15 @@ async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """When a member sends a photo in the group, log it as a pending task
-    submission against the most recently created active task."""
+    """When a member sends a photo in the group, figure out which active task
+    it's proof for, and log it as a pending submission.
+
+    Matching order:
+      1. If it's a reply to a task's announcement message, use that task.
+      2. If the caption contains a task tag like '#3', use that task.
+      3. If there's exactly one active task, fall back to it.
+      4. Otherwise, ask the member to clarify.
+    """
     if not update.message or update.effective_chat.type not in ("group", "supergroup"):
         return
     user = update.effective_user
@@ -283,22 +304,55 @@ async def handle_photo_submission(update: Update, context: ContextTypes.DEFAULT_
     with get_db() as conn:
         ensure_user(conn, user)
         c = conn.cursor()
-        c.execute(
-            "SELECT task_id FROM tasks WHERE active = 1 ORDER BY created_at DESC LIMIT 1"
-        )
-        task_row = c.fetchone()
-        if task_row is None:
-            return  # no active task to attach the screenshot to
+        task_id = None
+
+        if update.message.reply_to_message:
+            replied_id = update.message.reply_to_message.message_id
+            c.execute(
+                "SELECT task_id FROM tasks WHERE announcement_message_id = ? AND active = 1",
+                (replied_id,),
+            )
+            row = c.fetchone()
+            if row:
+                task_id = row["task_id"]
+
+        if task_id is None and update.message.caption:
+            match = re.search(r"#(\d+)", update.message.caption)
+            if match:
+                c.execute(
+                    "SELECT task_id FROM tasks WHERE task_id = ? AND active = 1",
+                    (int(match.group(1)),),
+                )
+                row = c.fetchone()
+                if row:
+                    task_id = row["task_id"]
+
+        if task_id is None:
+            c.execute("SELECT task_id FROM tasks WHERE active = 1")
+            active_tasks = c.fetchall()
+            if len(active_tasks) == 1:
+                task_id = active_tasks[0]["task_id"]
+            elif len(active_tasks) == 0:
+                return  # no active task at all, nothing to attach this to
+            else:
+                await update.message.reply_text(
+                    "I couldn't tell which task this screenshot is for, since "
+                    "there's more than one active task. Please reply directly to "
+                    "the task's announcement message, or add its number in your "
+                    "caption (e.g. \"#3\"). Use /tasks to see active task numbers."
+                )
+                return
 
         c.execute(
             "INSERT INTO submissions (user_id, task_id, status, submitted_at) "
             "VALUES (?, ?, 'pending', ?)",
-            (user.id, task_row["task_id"], datetime.datetime.now().isoformat()),
+            (user.id, task_id, datetime.datetime.now().isoformat()),
         )
         submission_id = c.lastrowid
 
     await update.message.reply_text(
-        f"✅ Got your screenshot! Submission #{submission_id} is pending admin review."
+        f"✅ Got your screenshot for task #{task_id}! Submission #{submission_id} "
+        "is pending admin review."
     )
 
 
@@ -332,10 +386,19 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         task_id = c.lastrowid
 
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         f"📢 New task #{task_id} created ({points} pts):\n{description}\n\n"
-        "Members: reply with a screenshot to submit proof!"
+        f"Members: reply to THIS message with a screenshot to submit proof! "
+        f"(Or caption your screenshot with #{task_id} if replying isn't possible.)"
     )
+
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE tasks SET announcement_chat_id = ?, announcement_message_id = ? "
+            "WHERE task_id = ?",
+            (sent.chat_id, sent.message_id, task_id),
+        )
 
 
 async def cmd_endtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
