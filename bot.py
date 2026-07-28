@@ -118,6 +118,28 @@ def init_db():
                 timestamp TEXT
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+
+def get_setting(conn, key):
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = c.fetchone()
+    return row["value"] if row else None
+
+
+def set_setting(conn, key, value):
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
 
 
 def today_str():
@@ -174,8 +196,9 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 async def delete_command_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Deletes the admin's own command message so the group only sees the
     bot's public replies (e.g. the task announcement), not the raw command.
-    Requires the bot to have delete-message rights in the group (it does,
-    since it's a group admin); silently does nothing if it can't."""
+    No-op in private chats, since there's no one else there to hide it from."""
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
     try:
         await context.bot.delete_message(
             update.effective_chat.id, update.message.message_id
@@ -421,6 +444,25 @@ async def handle_photo_submission(update: Update, context: ContextTypes.DEFAULT_
 # Admin commands
 # ---------------------------------------------------------------------------
 
+async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run once inside the group to link it — after that, /newtask can be
+    run privately in DM and will still post the announcement to the group."""
+    if update.effective_chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(
+            "Run this command inside your group (not in DM) to link it."
+        )
+        return
+    if not await is_admin(update, context):
+        await update.message.reply_text("⛔ Admins only.")
+        return
+    with get_db() as conn:
+        set_setting(conn, "group_chat_id", str(update.effective_chat.id))
+    await update.message.reply_text(
+        "✅ This group is now linked. You can run /newtask from your private "
+        "DM with me and it'll post here automatically."
+    )
+
+
 async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
@@ -435,7 +477,9 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• either — reply with either one\n\n"
             "Examples:\n"
             "/newtask 10 photo Like, comment and repost our latest post\n"
-            "/newtask 5 text Share one word that describes Web3 to you"
+            "/newtask 5 text Share one word that describes Web3 to you\n\n"
+            "Tip: run this from your private DM with me (after /setgroup once "
+            "in the group) to create tasks without the command showing in the group."
         )
         return
     try:
@@ -456,6 +500,21 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please include a task description.")
         return
 
+    # Figure out where the public announcement should be posted: the current
+    # chat if we're already in the group, or the linked group if we're in DM.
+    if update.effective_chat.type in ("group", "supergroup"):
+        target_chat_id = update.effective_chat.id
+    else:
+        with get_db() as conn:
+            group_chat_id = get_setting(conn, "group_chat_id")
+        if group_chat_id is None:
+            await update.message.reply_text(
+                "I don't know which group to post this task to yet. Run "
+                "/setgroup once inside your group first, then try again here."
+            )
+            return
+        target_chat_id = int(group_chat_id)
+
     with get_db() as conn:
         c = conn.cursor()
         c.execute(
@@ -472,11 +531,17 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         proof_note = "Reply to THIS message with your answer or a screenshot — either works!"
 
-    sent = await update.message.reply_text(
-        f"📢 New task #{task_id} created ({points} pts):\n{description}\n\n"
-        f"{proof_note}\n"
-        f"(Can't reply directly? Caption/tag your message with #{task_id} instead.)"
+    sent = await context.bot.send_message(
+        chat_id=target_chat_id,
+        text=(
+            f"📢 New task #{task_id} created ({points} pts):\n{description}\n\n"
+            f"{proof_note}\n"
+            f"(Can't reply directly? Caption/tag your message with #{task_id} instead.)"
+        ),
     )
+
+    if update.effective_chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(f"✅ Task #{task_id} posted to the group.")
 
     with get_db() as conn:
         c = conn.cursor()
@@ -620,9 +685,11 @@ async def cmd_removepoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _parse_points_args(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Supports: reply to a user's message with /addpoints <points> <reason>,
-    or /addpoints <user_id> <points> <reason>."""
-    if update.message.reply_to_message:
+    """Supports: reply to a user's message with /addpoints <points> <reason>
+    (group only), or /addpoints <user_id> <points> <reason> (works anywhere,
+    including DM)."""
+    in_group = update.effective_chat.type in ("group", "supergroup")
+    if in_group and update.message.reply_to_message:
         target_id = update.message.reply_to_message.from_user.id
         if len(context.args) < 1:
             await update.message.reply_text("Usage (as reply): /addpoints <points> <reason>")
@@ -632,8 +699,9 @@ async def _parse_points_args(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         if len(context.args) < 2:
             await update.message.reply_text(
-                "Usage: /addpoints <user_id> <points> <reason>, or reply to a "
-                "user's message with /addpoints <points> <reason>"
+                "Usage: /addpoints <user_id> <points> <reason>"
+                + (", or reply to a user's message with /addpoints <points> <reason>"
+                   if in_group else " (in DM, the user_id form is required)")
             )
             return None, None, None
         target_id = int(context.args[0])
@@ -708,6 +776,7 @@ def main():
     app.add_handler(CommandHandler("myscore", cmd_myscore))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
 
+    app.add_handler(CommandHandler("setgroup", cmd_setgroup))
     app.add_handler(CommandHandler("newtask", cmd_newtask))
     app.add_handler(CommandHandler("endtask", cmd_endtask))
     app.add_handler(CommandHandler("pending", cmd_pending))
