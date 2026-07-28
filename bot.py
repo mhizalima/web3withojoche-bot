@@ -171,6 +171,19 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         return False
 
 
+async def delete_command_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Deletes the admin's own command message so the group only sees the
+    bot's public replies (e.g. the task announcement), not the raw command.
+    Requires the bot to have delete-message rights in the group (it does,
+    since it's a group admin); silently does nothing if it can't."""
+    try:
+        await context.bot.delete_message(
+            update.effective_chat.id, update.message.message_id
+        )
+    except Exception:
+        pass  # no permission, message too old, or already gone — not critical
+
+
 # ---------------------------------------------------------------------------
 # User-facing commands
 # ---------------------------------------------------------------------------
@@ -412,6 +425,7 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     if len(context.args) < 2:
         await update.message.reply_text(
             "Usage: /newtask <points> [photo|text|either] <description>\n\n"
@@ -477,6 +491,7 @@ async def cmd_endtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     if not context.args:
         await update.message.reply_text("Usage: /endtask <task_id>")
         return
@@ -491,6 +506,7 @@ async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
@@ -522,6 +538,7 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     if not context.args:
         await update.message.reply_text("Usage: /approve <submission_id>")
         return
@@ -556,6 +573,7 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     if not context.args:
         await update.message.reply_text("Usage: /reject <submission_id>")
         return
@@ -579,6 +597,7 @@ async def cmd_addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     target_id, points, reason = await _parse_points_args(update, context)
     if target_id is None:
         return
@@ -591,6 +610,7 @@ async def cmd_removepoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     target_id, points, reason = await _parse_points_args(update, context)
     if target_id is None:
         return
@@ -626,6 +646,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     with get_db() as conn:
         c = conn.cursor()
         c.execute(
@@ -660,6 +681,7 @@ async def cmd_resetseason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("⛔ Admins only.")
         return
+    await delete_command_message(update, context)
     await update.message.reply_text("Generating final report before reset...")
     await cmd_report(update, context)
     with get_db() as conn:
