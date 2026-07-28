@@ -253,7 +253,56 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Passive tracking: every text message earns a small, capped amount of points
+# Shared helper: figure out which active task a message is proof for
+# ---------------------------------------------------------------------------
+
+def match_task_id(conn, message):
+    """Returns the active task_id a message is replying to / tagged with,
+    or None if it can't be determined from a reply or a '#N' tag.
+    Does NOT fall back to 'the only active task' — callers decide that."""
+    c = conn.cursor()
+    task_id = None
+
+    if message.reply_to_message:
+        replied_id = message.reply_to_message.message_id
+        c.execute(
+            "SELECT task_id FROM tasks WHERE announcement_message_id = ? AND active = 1",
+            (replied_id,),
+        )
+        row = c.fetchone()
+        if row:
+            task_id = row["task_id"]
+
+    if task_id is None:
+        text_to_check = message.caption or message.text or ""
+        match = re.search(r"#(\d+)", text_to_check)
+        if match:
+            c.execute(
+                "SELECT task_id FROM tasks WHERE task_id = ? AND active = 1",
+                (int(match.group(1)),),
+            )
+            row = c.fetchone()
+            if row:
+                task_id = row["task_id"]
+
+    return task_id
+
+
+def create_submission(conn, user_id, task_id):
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO submissions (user_id, task_id, status, submitted_at) "
+        "VALUES (?, ?, 'pending', ?)",
+        (user_id, task_id, datetime.datetime.now().isoformat()),
+    )
+    return c.lastrowid
+
+
+# ---------------------------------------------------------------------------
+# Passive tracking: every text message earns a small, capped amount of points.
+# If the text is also a reply to a task (or tagged #N), it's logged as a
+# submission too — so tasks that don't need a screenshot (e.g. "say hi",
+# "share one word") still get tracked automatically.
 # ---------------------------------------------------------------------------
 
 async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -262,6 +311,9 @@ async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.is_bot:
         return
+
+    submission_task_id = None
+    submission_id = None
 
     with get_db() as conn:
         ensure_user(conn, user)
@@ -284,6 +336,19 @@ async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (POINTS_PER_MESSAGE, user.id),
             )
 
+        # Only log a submission if this is an explicit reply to a task
+        # announcement or tagged with #N — NOT for every ordinary message.
+        task_id = match_task_id(conn, update.message)
+        if task_id is not None:
+            submission_task_id = task_id
+            submission_id = create_submission(conn, user.id, task_id)
+
+    if submission_task_id is not None:
+        await update.message.reply_text(
+            f"✅ Got your submission for task #{submission_task_id}! "
+            f"Submission #{submission_id} is pending admin review."
+        )
+
 
 async def handle_photo_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """When a member sends a photo in the group, figure out which active task
@@ -304,28 +369,7 @@ async def handle_photo_submission(update: Update, context: ContextTypes.DEFAULT_
     with get_db() as conn:
         ensure_user(conn, user)
         c = conn.cursor()
-        task_id = None
-
-        if update.message.reply_to_message:
-            replied_id = update.message.reply_to_message.message_id
-            c.execute(
-                "SELECT task_id FROM tasks WHERE announcement_message_id = ? AND active = 1",
-                (replied_id,),
-            )
-            row = c.fetchone()
-            if row:
-                task_id = row["task_id"]
-
-        if task_id is None and update.message.caption:
-            match = re.search(r"#(\d+)", update.message.caption)
-            if match:
-                c.execute(
-                    "SELECT task_id FROM tasks WHERE task_id = ? AND active = 1",
-                    (int(match.group(1)),),
-                )
-                row = c.fetchone()
-                if row:
-                    task_id = row["task_id"]
+        task_id = match_task_id(conn, update.message)
 
         if task_id is None:
             c.execute("SELECT task_id FROM tasks WHERE active = 1")
@@ -343,12 +387,7 @@ async def handle_photo_submission(update: Update, context: ContextTypes.DEFAULT_
                 )
                 return
 
-        c.execute(
-            "INSERT INTO submissions (user_id, task_id, status, submitted_at) "
-            "VALUES (?, ?, 'pending', ?)",
-            (user.id, task_id, datetime.datetime.now().isoformat()),
-        )
-        submission_id = c.lastrowid
+        submission_id = create_submission(conn, user.id, task_id)
 
     await update.message.reply_text(
         f"✅ Got your screenshot for task #{task_id}! Submission #{submission_id} "
