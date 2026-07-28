@@ -85,13 +85,18 @@ def init_db():
                 active INTEGER DEFAULT 1,
                 created_at TEXT,
                 announcement_chat_id INTEGER,
-                announcement_message_id INTEGER
+                announcement_message_id INTEGER,
+                proof_type TEXT DEFAULT 'either'
             )
         """)
         # Migration for databases created before these columns existed.
-        for col in ("announcement_chat_id", "announcement_message_id"):
+        for col, coltype in (
+            ("announcement_chat_id", "INTEGER"),
+            ("announcement_message_id", "INTEGER"),
+            ("proof_type", "TEXT DEFAULT 'either'"),
+        ):
             try:
-                c.execute(f"ALTER TABLE tasks ADD COLUMN {col} INTEGER")
+                c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
                 pass  # column already exists
         c.execute("""
@@ -232,7 +237,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_db() as conn:
         c = conn.cursor()
         c.execute(
-            "SELECT task_id, description, points_value FROM tasks "
+            "SELECT task_id, description, points_value, proof_type FROM tasks "
             "WHERE active = 1 ORDER BY created_at DESC"
         )
         rows = c.fetchall()
@@ -241,13 +246,17 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active tasks right now.")
         return
 
+    icons = {"photo": "📸", "text": "💬", "either": "✅"}
     lines = ["📋 *Active tasks*\n"]
     for row in rows:
-        lines.append(f"#{row['task_id']} ({row['points_value']} pts): {row['description']}")
+        icon = icons.get(row["proof_type"] or "either", "✅")
+        lines.append(
+            f"{icon} #{row['task_id']} ({row['points_value']} pts): {row['description']}"
+        )
     lines.append(
-        "\nTo submit proof: reply directly to that task's original announcement "
-        "message with your screenshot, or caption your screenshot with its "
-        "number (e.g. \"#3\")."
+        "\n📸 = screenshot required · 💬 = message only · ✅ = either works\n"
+        "\nTo submit: reply directly to that task's announcement message, "
+        "or tag your message/screenshot with its number (e.g. \"#3\")."
     )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -405,8 +414,14 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if len(context.args) < 2:
         await update.message.reply_text(
-            "Usage: /newtask <points> <description>\n"
-            "Example: /newtask 10 Like, comment and repost our latest post"
+            "Usage: /newtask <points> [photo|text|either] <description>\n\n"
+            "The proof type is optional (defaults to 'either'):\n"
+            "• photo — must reply with a screenshot\n"
+            "• text — just reply with a message, no screenshot needed\n"
+            "• either — reply with either one\n\n"
+            "Examples:\n"
+            "/newtask 10 photo Like, comment and repost our latest post\n"
+            "/newtask 5 text Share one word that describes Web3 to you"
         )
         return
     try:
@@ -414,21 +429,39 @@ async def cmd_newtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Points must be a number.")
         return
-    description = " ".join(context.args[1:])
+
+    proof_type = "either"
+    remaining_args = context.args[1:]
+    if remaining_args and remaining_args[0].lower() in ("photo", "text", "either", "screenshot"):
+        flag = remaining_args[0].lower()
+        proof_type = "photo" if flag == "screenshot" else flag
+        remaining_args = remaining_args[1:]
+
+    description = " ".join(remaining_args)
+    if not description:
+        await update.message.reply_text("Please include a task description.")
+        return
 
     with get_db() as conn:
         c = conn.cursor()
         c.execute(
-            "INSERT INTO tasks (description, points_value, active, created_at) "
-            "VALUES (?, ?, 1, ?)",
-            (description, points, datetime.datetime.now().isoformat()),
+            "INSERT INTO tasks (description, points_value, active, created_at, proof_type) "
+            "VALUES (?, ?, 1, ?, ?)",
+            (description, points, datetime.datetime.now().isoformat(), proof_type),
         )
         task_id = c.lastrowid
 
+    if proof_type == "photo":
+        proof_note = "📸 This task needs a screenshot as proof. Reply to THIS message with your screenshot!"
+    elif proof_type == "text":
+        proof_note = "💬 Just reply to THIS message with your answer — no screenshot needed!"
+    else:
+        proof_note = "Reply to THIS message with your answer or a screenshot — either works!"
+
     sent = await update.message.reply_text(
         f"📢 New task #{task_id} created ({points} pts):\n{description}\n\n"
-        f"Members: reply to THIS message with a screenshot to submit proof! "
-        f"(Or caption your screenshot with #{task_id} if replying isn't possible.)"
+        f"{proof_note}\n"
+        f"(Can't reply directly? Caption/tag your message with #{task_id} instead.)"
     )
 
     with get_db() as conn:
@@ -674,3 +707,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
