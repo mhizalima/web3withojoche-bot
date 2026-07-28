@@ -8,14 +8,14 @@ cycles (e.g. rewarding the top members every 3 months).
 ## What it does
 
 - **Passive tracking**: every text message earns a small point (capped per
-  day, so spamming doesn't inflate scores).
-- **Tasks**: an admin posts a task (e.g. "like, comment and repost this
-  post") with `/newtask`. Members submit proof by sending a screenshot in
+  day, so spamming doesn’t inflate scores).
+- **Tasks**: an admin posts a task (e.g. “like, comment and repost this
+  post”) with `/newtask`. Members submit proof by sending a screenshot in
   the group. Admins review with `/pending`, then `/approve` or `/reject`.
 - **Manual points**: admins can `/addpoints` or `/removepoints` for
   anything else (games, contests, following instructions well, etc.)
 - **Leaderboard**: `/leaderboard` shows the top 10 live. `/myscore` shows
-  an individual's points and rank.
+  an individual’s points and rank.
 - **Season reports**: `/report` dumps the full ranked list (as a file if
   long). `/resetseason` generates a final report, then zeroes points so you
   can start a fresh 3-month cycle.
@@ -23,11 +23,11 @@ cycles (e.g. rewarding the top members every 3 months).
 ## 1. Create the bot
 
 1. Open Telegram, message **@BotFather**.
-2. Send `/newbot` and follow the prompts to name it.
-3. BotFather gives you a **token** like `123456:ABC-DEF...` — save it.
-4. Add the bot to your group, and give it **admin rights** in the group
+1. Send `/newbot` and follow the prompts to name it.
+1. BotFather gives you a **token** like `123456:ABC-DEF...` — save it.
+1. Add the bot to your group, and give it **admin rights** in the group
    (so it can read all messages, not just commands — in Telegram group
-   privacy settings, or disable "Group Privacy" in BotFather's bot
+   privacy settings, or disable “Group Privacy” in BotFather’s bot
    settings so it can see every message).
 
 ## 2. Find your Telegram user ID (to be a bot admin)
@@ -60,40 +60,70 @@ Any host that can run a small always-on Python process works, e.g.
 **PythonAnywhere** always-on task. General steps for all of them:
 
 1. Push this folder to a GitHub repo.
-2. Create a new project/service from that repo.
-3. Set the start command to `python bot.py`.
-4. Add the same `BOT_TOKEN` and `ADMIN_IDS` environment variables in the
-   host's dashboard.
-5. Deploy.
+1. Create a new project/service from that repo.
+1. Set the start command to `python bot.py`.
+1. Add the same `BOT_TOKEN` and `ADMIN_IDS` environment variables in the
+   host’s dashboard.
+1. Deploy.
 
 Data is stored in a local SQLite file (`tracker.db`), created automatically
 next to `bot.py`. Most of these hosts wipe local disk on redeploy, so check
-your host's docs for a persistent volume/disk if you want data to survive
+your host’s docs for a persistent volume/disk if you want data to survive
 redeploys — otherwise back up `tracker.db` periodically.
 
 ## 4. Day-to-day usage
 
+**Doing everything privately from your DM with the bot (recommended):**
+
+First, run this **once inside the group** (as admin) to link it:
+
+```
+/setgroup
+```
+
+After that, you can message the bot **privately** and it still works:
+
+- `/newtask 10 photo Like, comment and repost our latest post: <link>` — posts
+  the public announcement into the group automatically, while your command
+  and the review process stay in your DM.
+- `/pending`, `/approve <id>`, `/reject <id>` — fully private, nothing shows
+  in the group.
+- `/addpoints <user_id> <points> <reason>` — works from DM too (the
+  reply-to-a-message shortcut only works when run inside the group).
+
+**Or doing it directly in the group:** all the same commands work there too.
+Your command messages get auto-deleted right after the bot processes them
+(it needs “Delete messages” permission, which it has as a group admin), so
+the group only ever sees the bot’s own replies — not your raw commands.
+
 **Launching an activity:**
+
 ```
 /newtask 10 Like, comment and repost our latest Instagram post: <link>
 ```
-Members reply in the group with a screenshot. You'll see it queue up:
+
+Members reply in the group with a screenshot. You’ll see it queue up:
+
 ```
 /pending
 /approve 4
 ```
 
-**Rewarding something that isn't a formal task** (e.g. a game winner):
+**Rewarding something that isn’t a formal task** (e.g. a game winner):
+
 ```
 /addpoints 8
 ```
-(sent as a reply to that member's message — awards 8 pts with reason "admin adjustment"),
+
+(sent as a reply to that member’s message — awards 8 pts with reason “admin adjustment”),
 or
+
 ```
 /addpoints 123456789 8 won the trivia game
 ```
 
 **Checking standings:**
+
 ```
 /leaderboard      → top 10 right now
 /myscore          → a member checks their own rank
@@ -101,10 +131,12 @@ or
 ```
 
 **Ending a 3-month cycle:**
+
 ```
 /resetseason
 ```
-This posts the final report, then resets everyone's points to 0 so the next
+
+This posts the final report, then resets everyone’s points to 0 so the next
 cycle starts clean (message counts are preserved for reference).
 
 ## Customizing
@@ -118,11 +150,11 @@ Task point values are set per-task when you run `/newtask <points> <description>
 
 ## Notes & limitations
 
-- The bot can't verify likes/comments/reposts on Instagram, TikTok, etc.
-  directly (those platforms don't allow that from a Telegram bot) — that's
+- The bot can’t verify likes/comments/reposts on Instagram, TikTok, etc.
+  directly (those platforms don’t allow that from a Telegram bot) — that’s
   why proof is via screenshot + admin approval, which keeps a human in the
   loop against fake submissions.
-- Games are set up here as a "manually award points" workflow
+- Games are set up here as a “manually award points” workflow
   (`/addpoints`). If you want a specific game mechanic wired up
-  automatically (trivia, quizzes, etc.), that's a natural next step —
+  automatically (trivia, quizzes, etc.), that’s a natural next step —
   just say what the game should be and I can add it.
